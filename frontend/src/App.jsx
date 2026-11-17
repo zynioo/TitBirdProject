@@ -1,421 +1,318 @@
 import React, { useState, useEffect } from 'react';
+import AuthView from './components/AuthView';
+import Navbar from './components/Navbar';
+import TicketItem from './components/TicketItem';
+import TicketForm from './components/TicketForm';
+import SecurityTests from './components/SecurityTests';
 import { 
   AlertCircle, 
   CheckCircle2, 
-  Computer, 
-  Monitor, 
-  Mouse, 
-  Wifi, 
-  Cable, 
-  HelpCircle, 
-  RefreshCw, 
-  PlusCircle, 
-  Clock, 
-  Layers
+  Layers, 
+  CheckCheck, 
+  RefreshCw,
+  PlusCircle,
+  Filter
 } from 'lucide-react';
-
-const CATEGORIES = [
-  { id: 'Monitor', label: 'Monitor / Ekran', icon: Monitor },
-  { id: 'Mysz/Klawiatura', label: 'Mysz / Klawiatura', icon: Mouse },
-  { id: 'PC/Stacja', label: 'Komputer / PC', icon: Computer },
-  { id: 'Sieć/Internet', label: 'Sieć / Internet', icon: Wifi },
-  { id: 'Okablowanie', label: 'Kable / Zasilanie', icon: Cable },
-  { id: 'Inne', label: 'Inna usterka', icon: HelpCircle },
-];
 
 const ROOMS = ['Sala 101', 'Sala 102', 'Sala 204', 'Sala 205', 'Sala 308'];
 
 export default function App() {
-  const [tickets, setTickets] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(null);
-
-  // Formularz
-  const [formData, setFormData] = useState({
-    room: 'Sala 204',
-    workstation_number: 1,
-    category: 'Monitor',
-    description: '',
+  const [token, setToken] = useState(() => localStorage.getItem('titbird_token') || null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('titbird_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
   });
 
-  // Filtrowanie
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('all'); // 'all' | 'my' | 'new' | 'security'
   const [selectedRoomFilter, setSelectedRoomFilter] = useState('ALL');
+  const [toast, setToast] = useState(null); // { type: 'success' | 'error', message: '' }
+
+  const showToast = (type, message) => {
+    setToast({ type, message });
+    setTimeout(() => {
+      setToast(null);
+    }, 4500);
+  };
 
   const fetchTickets = async () => {
+    if (!token) return;
     setLoading(true);
-    setError(null);
     try {
-      const res = await fetch('/api/tickets');
-      if (!res.ok) {
-        throw new Error(`Błąd serwera: ${res.status}`);
+      const res = await fetch('/api/tickets', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (res.status === 401) {
+        // Token wygasł lub jest nieprawidłowy
+        handleLogout();
+        showToast('error', 'Sesja wygasła. Zaloguj się ponownie.');
+        return;
       }
+
+      if (!res.ok) {
+        throw new Error(`Błąd pobierania danych: kod ${res.status}`);
+      }
+
       const data = await res.json();
       setTickets(data);
     } catch (err) {
       console.error(err);
-      setError('Nie udało się pobrać listy zgłoszeń. Upewnij się, że backend TitBird jest uruchomiony na porcie 8000.');
+      showToast('error', 'Nie udało się pobrać listy zgłoszeń.');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchTickets();
-  }, []);
+    if (token) {
+      fetchTickets();
+    }
+  }, [token]);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    setSuccess(null);
+  const handleLoginSuccess = (user, accessToken) => {
+    setCurrentUser(user);
+    setToken(accessToken);
+    setActiveTab('all');
+    showToast('success', `Zalogowano pomyślnie jako ${user.username}!`);
+  };
 
+  const handleLogout = () => {
+    localStorage.removeItem('titbird_token');
+    localStorage.removeItem('titbird_user');
+    setToken(null);
+    setCurrentUser(null);
+    setTickets([]);
+    setActiveTab('all');
+    showToast('success', 'Pomyślnie wylogowano z systemu.');
+  };
+
+  const handleUpdateStatus = async (ticketId, newStatus, priority = null) => {
     try {
-      const payload = {
-        room: formData.room,
-        workstation_number: parseInt(formData.workstation_number, 10),
-        category: formData.category,
-        description: formData.description,
-      };
+      const body = { status: newStatus };
+      if (priority) body.priority = priority;
 
-      const res = await fetch('/api/tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      const res = await fetch(`/api/tickets/${ticketId}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(body)
       });
+
+      const data = await res.json();
 
       if (!res.ok) {
-        const errorData = await res.json();
-        // Obsługa błędów walidacji Pydantic
-        if (errorData.detail && Array.isArray(errorData.detail)) {
-          const msg = errorData.detail.map(d => `${d.loc.join('.')}: ${d.msg}`).join(', ');
-          throw new Error(`Błąd walidacji serwerowej (Pydantic): ${msg}`);
-        } else if (typeof errorData.detail === 'string') {
-          throw new Error(errorData.detail);
-        } else {
-          throw new Error(`Błąd serwera: kod ${res.status}`);
-        }
+        throw new Error(data.detail || `Błąd aktualizacji: kod ${res.status}`);
       }
 
-      const created = await res.json();
-      setSuccess(`Zgłoszenie #${created.id} zostało pomyślnie zarejestrowane!`);
-      setFormData({
-        room: formData.room,
-        workstation_number: 1,
-        category: 'Monitor',
-        description: '',
-      });
-      // Odśwież listę
-      fetchTickets();
+      showToast('success', `Status zgłoszenia #${ticketId} został zaktualizowany na '${newStatus}'.`);
+      // Zaktualizuj stan lokalny
+      setTickets(prev => prev.map(t => t.id === ticketId ? data : t));
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Wystąpił nieoczekiwany błąd podczas wysyłania zgłoszenia.');
-    } finally {
-      setSubmitting(false);
+      showToast('error', err.message || 'Nie udało się zaktualizować statusu.');
     }
   };
 
-  const filteredTickets = selectedRoomFilter === 'ALL' 
-    ? tickets 
-    : tickets.filter(t => t.room === selectedRoomFilter);
+  const handleDeleteTicket = async (ticketId) => {
+    try {
+      const res = await fetch(`/api/tickets/${ticketId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
 
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'new':
-        return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800">Nowe</span>;
-      case 'in_progress':
-        return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800">W trakcie</span>;
-      case 'resolved':
-        return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">Naprawione</span>;
-      case 'cancelled':
-        return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800">Anulowane</span>;
-      default:
-        return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800">{status}</span>;
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || `Błąd usuwania: kod ${res.status}`);
+      }
+
+      showToast('success', `Zgłoszenie #${ticketId} zostało usunięte.`);
+      setTickets(prev => prev.filter(t => t.id !== ticketId));
+    } catch (err) {
+      console.error(err);
+      showToast('error', err.message || 'Nie udało się usunąć zgłoszenia.');
     }
   };
+
+  const handleTicketCreated = (newTicket) => {
+    setTickets(prev => [newTicket, ...prev]);
+    setActiveTab('all');
+    showToast('success', `Zgłoszenie #${newTicket.id} w ${newTicket.room} zostało utworzone!`);
+  };
+
+  // Jeśli użytkownik nie jest zalogowany -> Ekran Logowania i Rejestracji (Blokada niezalogowanych)
+  if (!token || !currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex flex-col justify-between">
+        <AuthView onLoginSuccess={handleLoginSuccess} />
+        <footer className="py-4 text-center text-xs text-slate-500">
+          TitBird &bull; Projekt z przedmiotu Technologie Webowe &bull; Zabezpieczenia: bcrypt, JWT, IDOR, RBAC, Pydantic v2
+        </footer>
+      </div>
+    );
+  }
+
+  // Filtrowanie zgłoszeń
+  const displayTickets = tickets.filter(ticket => {
+    if (activeTab === 'my') {
+      if (ticket.owner_id !== currentUser.id) return false;
+    }
+    if (selectedRoomFilter !== 'ALL') {
+      if (ticket.room !== selectedRoomFilter) return false;
+    }
+    return true;
+  });
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-100 text-slate-900">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-xl shadow-sm">
-              TB
+      <Navbar 
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onRefresh={fetchTickets}
+        loading={loading}
+      />
+
+      {/* Globalny Toast / Alert */}
+      {toast && (
+        <div className="fixed top-20 right-4 z-50 max-w-sm w-full animate-fadeIn">
+          <div className={`p-4 rounded-2xl shadow-lg border flex items-start gap-3 ${
+            toast.type === 'success' 
+              ? 'bg-emerald-500 text-white border-emerald-600' 
+              : 'bg-rose-500 text-white border-rose-600'
+          }`}>
+            {toast.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            )}
+            <div className="text-sm font-medium flex-1">
+              {toast.message}
             </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-                TitBird
-                <span className="text-xs bg-blue-50 text-blue-700 font-semibold px-2 py-0.5 rounded-md border border-blue-200">
-                  Vertical Slice
-                </span>
-              </h1>
-              <p className="text-xs text-slate-500">System zgłaszania usterek w pracowniach komputerowych</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
             <button
-              onClick={fetchTickets}
-              disabled={loading}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition active:scale-95 disabled:opacity-50"
+              onClick={() => setToast(null)}
+              className="text-white/80 hover:text-white text-xs font-bold px-1"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-              Odśwież
+              ✕
             </button>
-            <a
-              href="http://127.0.0.1:8000/docs"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition"
-            >
-              Swagger API /docs
-            </a>
           </div>
         </div>
-      </header>
+      )}
 
-      {/* Main Content */}
+      {/* Główna treść */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-        {/* Powiadomienia */}
-        {error && (
-          <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-3 shadow-sm animate-fadeIn">
-            <AlertCircle className="w-5 h-5 text-rose-600 mt-0.5 flex-shrink-0" />
-            <div className="text-sm">
-              <span className="font-semibold block">Wystąpił problem:</span>
-              {error}
-            </div>
+        {/* Widok: NOWE ZGŁOSZENIE */}
+        {activeTab === 'new' && (
+          <div className="max-w-2xl mx-auto">
+            <TicketForm 
+              token={token} 
+              onTicketCreated={handleTicketCreated} 
+            />
           </div>
         )}
 
-        {success && (
-          <div className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 flex items-start gap-3 shadow-sm animate-fadeIn">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5 flex-shrink-0" />
-            <div className="text-sm font-medium">{success}</div>
-          </div>
+        {/* Widok: TESTY BEZPIECZEŃSTWA */}
+        {activeTab === 'security' && (
+          <SecurityTests 
+            token={token}
+            currentUser={currentUser}
+            tickets={tickets}
+          />
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* Kolumna 1: Formularz dodawania (5 kolumn) */}
-          <section className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-            <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
-              <PlusCircle className="w-5 h-5 text-blue-600" />
-              <h2 className="text-base font-bold text-slate-900">Zgłoś nową usterkę</h2>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Wybór sali */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
-                  Sala lekcyjna
-                </label>
-                <select
-                  value={formData.room}
-                  onChange={(e) => setFormData({ ...formData, room: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
-                  required
-                >
-                  {ROOMS.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Numer stanowiska */}
-              <div>
-                <div className="flex justify-between items-center mb-1.5">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
-                    Numer stanowiska (1–32)
-                  </label>
-                  <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
-                    Stanowisko #{formData.workstation_number}
-                  </span>
-                </div>
-                <input
-                  type="number"
-                  min="1"
-                  max="32"
-                  value={formData.workstation_number}
-                  onChange={(e) => setFormData({ ...formData, workstation_number: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
-                  required
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  W każdej pracowni znajduje się maksymalnie 32 ponumerowane stanowiska.
-                </p>
-              </div>
-
-              {/* Kategoria sprzętu */}
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-1.5">
-                  Kategoria usterki
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {CATEGORIES.map((cat) => {
-                    const Icon = cat.icon;
-                    const isSelected = formData.category === cat.id;
-                    return (
-                      <button
-                        type="button"
-                        key={cat.id}
-                        onClick={() => setFormData({ ...formData, category: cat.id })}
-                        className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-medium text-left transition ${
-                          isSelected
-                            ? 'border-blue-600 bg-blue-50 text-blue-700 shadow-sm'
-                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        <Icon className={`w-4 h-4 ${isSelected ? 'text-blue-600' : 'text-slate-500'}`} />
-                        <span className="truncate">{cat.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Opis problemu */}
-              <div>
-                <div className="flex justify-between items-center mb-1.5">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
-                    Dokładny opis usterki
-                  </label>
-                  <span className="text-xs text-slate-400">
-                    {formData.description.length} / 2000 znaków
-                  </span>
-                </div>
-                <textarea
-                  rows="4"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Np. Brak sygnału na monitorze, uszkodzony wtyk kabla HDMI po prawej stronie..."
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl p-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition resize-none"
-                  required
-                  minLength={5}
-                  maxLength={2000}
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  Minimalna długość opisu to 5 znaków (weryfikowana przez Pydantic).
-                </p>
-              </div>
-
-              {/* Przycisk wysyłania */}
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 px-4 rounded-xl shadow-sm transition active:scale-98 disabled:opacity-50"
-              >
-                {submitting ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    Zapisywanie zgłoszenia...
-                  </>
-                ) : (
-                  <>
-                    <PlusCircle className="w-4 h-4" />
-                    Zarejestruj usterkę
-                  </>
-                )}
-              </button>
-            </form>
-          </section>
-
-          {/* Kolumna 2: Lista zgłoszeń (7 kolumn) */}
-          <section className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 pb-4 border-b border-slate-100">
+        {/* Widok: WSZYSTKIE LUB MOJE ZGŁOSZENIA */}
+        {(activeTab === 'all' || activeTab === 'my') && (
+          <div className="space-y-6">
+            {/* Pasek filtrowania i podsumowania */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-2">
                 <Layers className="w-5 h-5 text-blue-600" />
                 <h2 className="text-base font-bold text-slate-900">
-                  Zgłoszenia w pracowniach
+                  {activeTab === 'my' ? 'Moje zgłoszenia' : 'Zgłoszenia w pracowniach'}
                 </h2>
-                <span className="text-xs font-semibold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full">
-                  {filteredTickets.length}
+                <span className="text-xs font-bold bg-blue-50 text-blue-700 px-2.5 py-0.5 rounded-full border border-blue-200">
+                  {displayTickets.length}
                 </span>
               </div>
 
-              {/* Filtr sal */}
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-slate-500 font-medium">Filtruj salę:</span>
-                <select
-                  value={selectedRoomFilter}
-                  onChange={(e) => setSelectedRoomFilter(e.target.value)}
-                  className="bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              {/* Filtry */}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                  <Filter className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Sala:</span>
+                  <select
+                    value={selectedRoomFilter}
+                    onChange={(e) => setSelectedRoomFilter(e.target.value)}
+                    className="bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="ALL">Wszystkie sale</option>
+                    {ROOMS.map(r => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  onClick={() => setActiveTab('new')}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-sm transition active:scale-95"
                 >
-                  <option value="ALL">Wszystkie sale</option>
-                  {ROOMS.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
+                  <PlusCircle className="w-3.5 h-3.5" />
+                  Nowe zgłoszenie
+                </button>
               </div>
             </div>
 
-            {/* Lista kafelków */}
+            {/* Lista kafelków zgłoszeń */}
             {loading && tickets.length === 0 ? (
-              <div className="py-16 text-center text-slate-400">
-                <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-2 text-blue-500" />
-                <p className="text-sm font-medium">Ładowanie zgłoszeń z bazy...</p>
+              <div className="py-20 text-center text-slate-400">
+                <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3 text-blue-600" />
+                <p className="text-sm font-medium">Ładowanie zgłoszeń z bazy danych...</p>
               </div>
-            ) : filteredTickets.length === 0 ? (
-              <div className="py-16 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                <CheckCircle2 className="w-10 h-10 mx-auto mb-2 text-slate-300" />
-                <p className="text-sm font-semibold text-slate-600">Brak zgłoszonych usterek</p>
-                <p className="text-xs text-slate-400 mt-1">
-                  Wszystkie stanowiska komputerowe w tej sali działają prawidłowo!
+            ) : displayTickets.length === 0 ? (
+              <div className="py-16 text-center text-slate-400 bg-white rounded-2xl border border-dashed border-slate-200">
+                <CheckCheck className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+                <p className="text-base font-semibold text-slate-700">Brak zgłoszeń do wyświetlenia</p>
+                <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                  {activeTab === 'my' 
+                    ? 'Nie zarejestrowałeś jeszcze żadnego zgłoszenia usterki. Kliknij przycisk powyżej, aby zgłosić usterkę.'
+                    : 'Brak zarejestrowanych usterek dla wybranych kryteriów filtrowania.'}
                 </p>
               </div>
             ) : (
-              <div className="space-y-3.5">
-                {filteredTickets.map((ticket) => (
-                  <article
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {displayTickets.map((ticket) => (
+                  <TicketItem
                     key={ticket.id}
-                    className="p-4 rounded-xl border border-slate-200 hover:border-slate-300 hover:shadow-sm bg-white transition space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-sm text-slate-900">
-                          {ticket.room}
-                        </span>
-                        <span className="text-xs bg-slate-100 text-slate-700 font-medium px-2 py-0.5 rounded-md border border-slate-200">
-                          Stanowisko #{ticket.workstation_number}
-                        </span>
-                        <span className="text-xs bg-indigo-50 text-indigo-700 font-medium px-2 py-0.5 rounded-md border border-indigo-200">
-                          {ticket.category}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {getStatusBadge(ticket.status)}
-                      </div>
-                    </div>
-
-                    {/* Bezpieczne renderowanie JSX - ochrona przed XSS */}
-                    <p className="text-sm text-slate-700 bg-slate-50 p-3 rounded-lg border border-slate-100 break-words">
-                      {ticket.description}
-                    </p>
-
-                    <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5" />
-                        {new Date(ticket.created_at).toLocaleString('pl-PL')}
-                      </span>
-                      <span className="text-slate-400 font-mono text-[11px]">
-                        ID: #{ticket.id}
-                      </span>
-                    </div>
-                  </article>
+                    ticket={ticket}
+                    currentUser={currentUser}
+                    onUpdateStatus={handleUpdateStatus}
+                    onDeleteTicket={handleDeleteTicket}
+                    token={token}
+                  />
                 ))}
               </div>
             )}
-          </section>
-        </div>
+          </div>
+        )}
       </main>
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-4 mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500">
-          TitBird &bull; Projekt semestralny z przedmiotu Technologie Webowe &bull; Zgodny ze specyfikacją Bezpieczna aplikacja webowa
+          TitBird &bull; Technologie Webowe &bull; Zalogowany: <strong>{currentUser.username}</strong> ({currentUser.role === 'admin' ? 'Administrator' : 'Uczeń'})
         </div>
       </footer>
     </div>
